@@ -1,0 +1,96 @@
+name: ShopStack CI/CD
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install backend dependencies
+        working-directory: ./backend
+        run: npm install
+
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm install
+
+      - name: Build frontend (catches build-breaking errors)
+        working-directory: ./frontend
+        run: npm run build
+
+  build-and-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push backend image
+        run: |
+          docker build -t ${{ env.ECR_REGISTRY }}/shopstack-backend:${{ github.sha }} ./backend
+          docker push ${{ env.ECR_REGISTRY }}/shopstack-backend:${{ github.sha }}
+
+      - name: Build and push frontend image
+        run: |
+          docker build -t ${{ env.ECR_REGISTRY }}/shopstack-frontend:${{ github.sha }} ./frontend
+          docker push ${{ env.ECR_REGISTRY }}/shopstack-frontend:${{ github.sha }}
+
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install shopstack ./helm/shopstack \
+            --set backend.image=${{ env.ECR_REGISTRY }}/shopstack-backend:${{ github.sha }} \
+            --set frontend.image=${{ env.ECR_REGISTRY }}/shopstack-frontend:${{ github.sha }} \
+            --set postgres.password=${{ secrets.DB_PASSWORD }} \
+            --set jwtSecret=${{ secrets.JWT_SECRET }} \
+            --wait --timeout 300s
+
+      - name: Verify rollout
+        run: |
+          kubectl get pods
+          kubectl get svc
+          kubectl get ingress

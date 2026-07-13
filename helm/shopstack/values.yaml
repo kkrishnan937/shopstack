@@ -1,0 +1,16 @@
+frontend:
+  image: shopstack-frontend:latest
+  replicas: 2
+
+backend:
+  image: shopstack-backend:latest
+  replicas: 2
+
+postgres:
+  image: postgres:16-alpine
+  storageSize: 5Gi
+  user: shopstack
+  password: changeme123
+  database: shopstack
+
+jwtSecret: changeme-jwt-secret

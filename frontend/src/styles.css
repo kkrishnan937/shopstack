@@ -1,0 +1,151 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #f4f5f7;
+  color: #1a1a1a;
+}
+
+.app-shell {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 20px 60px;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: white;
+  border-radius: 12px;
+  padding: 14px 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 17px;
+}
+
+.brand-icon {
+  font-size: 20px;
+}
+
+.login-form {
+  display: flex;
+  gap: 8px;
+}
+
+.login-form input {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d8dae0;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+}
+
+.login-form input:focus {
+  border-color: #4f7cff;
+}
+
+.login-form button,
+.add-to-cart-btn {
+  height: 34px;
+  padding: 0 16px;
+  background: #1a1a1a;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.login-form button:hover,
+.add-to-cart-btn:hover {
+  background: #333;
+}
+
+.logged-in-pill {
+  background: #e7f7ee;
+  color: #1c7a44;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.status-message {
+  font-size: 13px;
+  color: #666;
+  margin: 0 0 16px 4px;
+}
+
+.product-section {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.section-label {
+  font-size: 13px;
+  color: #888;
+  margin: 0 0 14px;
+}
+
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 14px;
+}
+
+.product-card {
+  border: 1px solid #eceef1;
+  border-radius: 10px;
+  overflow: hidden;
+  transition: box-shadow 0.15s ease;
+}
+
+.product-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.product-thumb {
+  height: 80px;
+  background: #f4f5f7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+}
+
+.product-info {
+  padding: 12px;
+}
+
+.product-name {
+  font-size: 13px;
+  font-weight: 500;
+  margin: 0 0 2px;
+}
+
+.product-price {
+  font-size: 13px;
+  color: #666;
+  margin: 0 0 10px;
+}
+
+.add-to-cart-btn {
+  width: 100%;
+}
