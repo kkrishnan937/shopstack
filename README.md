@@ -160,3 +160,11 @@ cd terraform && terraform destroy
 ```
 
 **Warning:** this deletes the EKS cluster, VPC, and all associated resources.
+
+## Screenshots
+
+**App running live on AWS (not localhost) — full storefront with login and product grid:**
+![App running on ALB](docs/screenshots/01-app-running-on-alb.png)
+
+**EKS nodes, pods, and Ingress all healthy:**
+![Nodes, pods, and ingress](docs/screenshots/02-nodes-pods-ingress.png)
