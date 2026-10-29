@@ -23,6 +23,14 @@ PGlite is a file-backed embedded PostgreSQL development dependency ([official fi
 
 ## Manual local use
 
+## Conventional PostgreSQL verification
+
+The same browser suite can run through the normal `pg` adapter against an isolated PostgreSQL server. Set `CART_UAT_PG_URL` to its loopback `postgres` maintenance database (for example the disposable PostgreSQL service in `.github/workflows/cart-viewing.yaml`). The harness creates a uniquely generated `shopstack_uat_*` database, uses only that database for fixtures, closes connections and drops only its generated database afterward. The role needs permission to create databases. Never point this test configuration at a production service. The URL is not written to evidence. With PostgreSQL, SUP-PERSIST verifies committed data through a new connection; it does not claim a database-server restart.
+
+The PR workflow runs embedded and PostgreSQL 17 jobs, builds the frontend, installs Chromium and uploads evidence. It has read-only repository permissions and performs no cloud deployment. The separate existing main-branch deployment workflow is unchanged; merging can trigger it and requires a separate decision.
+
+## Manual local use
+
 With normal PostgreSQL available, run the backend and frontend normally. For a local embedded database, set `DB_ENGINE=pglite` and `PGLITE_DATA_DIR` to a dedicated local data directory before `node backend/server.js`, then run Vite from `frontend`. Authentication uses the actual register/login routes. Test fixtures are created by the harness, not a public seed endpoint.
 
 No application-wide mutation workflow ships in this slice: catalog add controls are disabled, cart POST/DELETE and order submission return 501. This deliberately enforces the unresolved mutation-release gates. Read-only orders are unaffected. Token invalidation, quantity-update reconciliation and later checkout are not implemented by this slice.

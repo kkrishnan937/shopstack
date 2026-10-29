@@ -25,6 +25,7 @@ export default function App() {
     setCartStatus("loading");
     fetch("/api/cart", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store", signal: controller.signal })
       .then(async res => {
+        if (controller.signal.aborted) return;
         if (res.status === 401) {
           localStorage.removeItem("token");
           setToken(""); setMessage("Your session expired. Please sign in again to view your cart.");
@@ -43,7 +44,12 @@ export default function App() {
 
   useEffect(() => {
     fetch("/api/products")
-      .then((r) => r.json())
+      .then(async response => {
+        if (!response.ok) throw new Error("Catalog unavailable");
+        const data = await response.json();
+        if (!Array.isArray(data)) throw new Error("Invalid catalog response");
+        return data;
+      })
       .then(setProducts)
       .catch(() => setMessage("Could not reach backend API"));
   }, []);

@@ -1,0 +1,69 @@
+name: Cart viewing acceptance
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cart-viewing-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  acceptance:
+    name: Cart acceptance (${{ matrix.engine }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [embedded, postgres]
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: synthetic-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+          cache-dependency-path: |
+            backend/pnpm-lock.yaml
+            frontend/pnpm-lock.yaml
+      - name: Install locked dependencies
+        run: |
+          pnpm --dir backend install --frozen-lockfile
+          pnpm --dir frontend install --frozen-lockfile
+      - name: Build actual frontend
+        working-directory: frontend
+        run: node node_modules/vite/bin/vite.js build
+      - name: Install Chromium
+        run: node backend/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Execute cart acceptance checks
+        env:
+          CART_UAT_PG_URL: ${{ matrix.engine == 'postgres' && 'postgresql://postgres:synthetic-test-only@127.0.0.1:5432/postgres' || '' }}
+          EVIDENCE_DIR: ${{ github.workspace }}/cart-uat-evidence/${{ matrix.engine }}
+        run: node backend/test/cart-view.e2e.cjs
+      - name: Upload actual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cart-acceptance-${{ matrix.engine }}
+          path: cart-uat-evidence/${{ matrix.engine }}
+          if-no-files-found: warn

@@ -4,7 +4,6 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { execFileSync } = require("node:child_process");
 const { chromium } = require("playwright");
 const root = path.resolve(__dirname, "../..");
 const runId = new Date().toISOString().replace(/[:.]/g, "-");
@@ -12,7 +11,19 @@ const runRoot = path.join(root, ".local", "cart-uat", runId);
 const evidence = path.resolve(process.env.EVIDENCE_DIR || path.join(runRoot, "evidence"));
 fs.mkdirSync(evidence, { recursive: true });
 process.env.NODE_ENV = "test";
-process.env.DB_ENGINE = "pglite";
+const postgresUrl = process.env.CART_UAT_PG_URL;
+const pgConfig = postgresUrl ? new URL(postgresUrl) : null;
+if (pgConfig && (!['localhost', '127.0.0.1', '[::1]'].includes(pgConfig.hostname) || pgConfig.pathname !== '/postgres')) {
+  throw new Error("CART_UAT_PG_URL must name a loopback test server's postgres maintenance database");
+}
+process.env.DB_ENGINE = postgresUrl ? "postgres" : "pglite";
+if (pgConfig) {
+  process.env.DB_HOST = pgConfig.hostname;
+  process.env.DB_PORT = pgConfig.port || '5432';
+  process.env.DB_USER = decodeURIComponent(pgConfig.username);
+  process.env.DB_PASSWORD = decodeURIComponent(pgConfig.password);
+  process.env.DB_NAME = `shopstack_uat_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+}
 process.env.PGLITE_DATA_DIR = path.join(runRoot, "database");
 process.env.JWT_SECRET = crypto.randomBytes(32).toString("hex");
 const { pool, initSchema } = require("../db");
@@ -24,7 +35,10 @@ const results = [];
 const network = [];
 const observedCarts = [];
 let server, browser, databaseClosed = false;
+let admin, postgresCreated = false, postgresVersion;
 let failRead = false;
+let failCatalog = false;
+const noticeStates = new Set();
 let coreAfter;
 const hash = value => crypto.createHash("sha256").update(value).digest("hex");
 const sourceFiles = ["backend/db.js", "backend/server.js", "backend/routes/cart.js", "backend/services/cart-read.js", "backend/middleware/auth.js", "backend/routes/auth.js", "backend/test/cart-view.e2e.cjs", "frontend/src/App.jsx", "frontend/src/styles.css", "frontend/vite.config.js", "backend/package.json", "backend/pnpm-lock.yaml"];
@@ -45,7 +59,16 @@ async function snapshot(userId) {
   };
 }
 async function main() {
+  if (postgresUrl) {
+    admin = new (require('pg').Client)({ connectionString: postgresUrl });
+    await admin.connect();
+    // Generated identifier only; never reset an existing user database.
+    assert.match(process.env.DB_NAME, /^shopstack_uat_[a-z0-9_]+$/);
+    await admin.query(`CREATE DATABASE "${process.env.DB_NAME}"`);
+    postgresCreated = true;
+  }
   await initSchema();
+  if (postgresUrl) postgresVersion = (await pool.query('SELECT version()')).rows[0].version;
   const password = crypto.randomBytes(18).toString("base64url");
   const email = "cart-review@example.test";
   const { rows: [user] } = await pool.query("INSERT INTO users (name, email, password_hash) VALUES ($1,$2,$3) RETURNING id", ["Synthetic Cart Reviewer", email, await bcrypt.hash(password, 10)]);
@@ -55,7 +78,9 @@ async function main() {
   await pool.query("INSERT INTO cart_items (user_id, product_id, quantity) VALUES ($1,$2,2), ($1,$3,1)", [user.id, mug.id, mouse.id]);
   await pool.query("INSERT INTO cart_state (user_id, last_changed_at) VALUES ($1, CURRENT_TIMESTAMP - INTERVAL '20 days')", [user.id]);
   const before = await snapshot(user.id);
-  const app = createApp({ beforeCartRead: () => { if (failRead) throw new Error("Controlled cart-read failure"); } });
+  const app = express();
+  app.get('/api/products', (req,res,next) => failCatalog ? res.status(503).json({error:'Controlled catalog failure'}) : next());
+  app.use(createApp({ beforeCartRead: () => { if (failRead) throw new Error("Controlled cart-read failure"); } }));
   app.use(express.static(path.join(root, "frontend/dist")));
   server = await new Promise(resolve => { const s = app.listen(0, "127.0.0.1", () => resolve(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -74,7 +99,11 @@ async function main() {
   await page.getByRole("button", { name: "Log in", exact: true }).click();
   assert.equal((await loginResponse).status(), 200);
   await page.getByText("Logged in as Synthetic Cart Reviewer").waitFor();
-  const capture = async name => {
+  const capture = async (name, state) => {
+    if (state) {
+      await page.getByText('Cart subtotal only. Tax and shipping are calculated at demo checkout. No payment is taken.', {exact:true}).waitFor();
+      noticeStates.add(state);
+    }
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await page.locator(".app-shell").screenshot({ path: path.join(evidence, name) });
@@ -96,7 +125,7 @@ async function main() {
     assert.equal(await page.getByText("Cart is empty", { exact: true }).count(), 0);
     assert.equal(await page.locator(".cart-subtotal").count(), 0);
     assert.deepEqual(await snapshot(user.id), before);
-    return { responseStatus: 503, noEmptyClaim: true, noConfirmedSubtotal: true, savedStateUnchanged: true, screenshot: await capture("01-cart-load-failure.png") };
+    return { responseStatus: 503, noEmptyClaim: true, noConfirmedSubtotal: true, savedStateUnchanged: true, screenshot: await capture("01-cart-load-failure.png", 'error') };
   });
   await step("CART-T-05", "Retry fails safely, then recovers when failure is removed", async () => {
     let response = page.waitForResponse(r => new URL(r.url()).pathname === "/api/cart");
@@ -116,7 +145,7 @@ async function main() {
     assert.equal(await page.getByText("Couldn't load your cart. Please try again.", { exact: true }).count(), 0);
     assert.deepEqual(await snapshot(user.id), before);
     assert(network.every(r => r.method === "GET"));
-    return { retryStatuses: [503, 200], subtotalCents: 4999, savedStateUnchanged: true, onlyCartReads: true, screenshots: [repeatedFailure, await capture("03-cart-recovered.png")] };
+    return { retryStatuses: [503, 200], subtotalCents: 4999, savedStateUnchanged: true, onlyCartReads: true, screenshots: [repeatedFailure, await capture("03-cart-recovered.png", 'active')] };
   });
   await step("CART-T-01", "Saved products and integer-cent amounts match rendered cart", async () => {
     const data = observedCarts[0];
@@ -166,7 +195,7 @@ async function main() {
     await page.getByText("Cart is empty", { exact: true }).waitFor();
     assert.equal(await page.locator(".cart-subtotal strong").innerText(), "CAD 0.00");
     assert.equal(await page.getByText("Your saved cart expired after 30 days without changes.", { exact: true }).count(), 0);
-    return { subtotalCents: 0, expiryNoticeAbsent: true, screenshot: await capture("04-empty-cart.png") };
+    return { subtotalCents: 0, expiryNoticeAbsent: true, screenshot: await capture("04-empty-cart.png", 'empty') };
   });
   await step("CART-T-28", "Expired saved items removed with persistent explanation", async () => {
     await pool.query("INSERT INTO cart_items (user_id, product_id, quantity) VALUES ($1,$2,2)", [user.id,mug.id]);
@@ -176,7 +205,7 @@ async function main() {
     assert.equal(await page.locator(".cart-subtotal strong").innerText(), "CAD 0.00");
     const expiredState = await snapshot(user.id);
     assert.equal(expiredState.items.length, 0); assert.equal(expiredState.metadata[0].expired, true);
-    const screenshot = await capture("05-expired-cart.png");
+    const screenshot = await capture("05-expired-cart.png", 'expired');
     await page.getByRole("button", { name: "Dismiss expiry notice", exact: true }).click();
     assert.equal(await page.getByText("Your saved cart expired after 30 days without changes.", { exact: true }).count(), 0);
     assert.equal((await snapshot(user.id)).metadata[0].expired, true);
@@ -187,10 +216,9 @@ async function main() {
     return { expiredAfter721Hours: true, savedItemsRemoved: true, persistentReason: true, viewLocalDismissal: true, screenshot };
   });
   await step("CART-T-07", "Pricing notice present in implemented cart states", async () => {
-    // Screenshots capture failure, active, empty and expired states; notice is
-    // unconditional in the cart page. Check text and all captured state evidence.
+    assert.deepEqual([...noticeStates].sort(), ['active','empty','error','expired']);
     await page.getByText("Cart subtotal only. Tax and shipping are calculated at demo checkout. No payment is taken.", { exact: true }).waitFor();
-    return { notice: "Cart subtotal only. Tax and shipping are calculated at demo checkout. No payment is taken.", scope: "Four implemented states; mutations/checkout not enabled" };
+    return { notice: "Cart subtotal only. Tax and shipping are calculated at demo checkout. No payment is taken.", checkedStates: [...noticeStates].sort(), scope: "Four implemented states; mutations/checkout not enabled" };
   });
   await step("SUP-SESSION", "Expired token requests sign-in without expiring cart", async () => {
     const prior = await snapshot(user.id);
@@ -223,19 +251,31 @@ async function main() {
     assert.equal((await pool.query("SELECT quantity FROM cart_items WHERE user_id=$1",[other.id])).rows[0].quantity,7);
     return {otherCustomerItemsNotExposed:true,otherCustomerStateUnchanged:true};
   });
+  await step("SUP-CATALOG", "Catalog outage does not crash the cart page", async () => {
+    failCatalog = true;
+    await page.reload();
+    await page.getByText('Could not reach backend API', {exact:true}).waitFor();
+    await page.getByRole('heading', {name:'Your cart',exact:true}).waitFor();
+    await page.getByText('Cart is empty', {exact:true}).waitFor();
+    assert.equal(await page.locator('.cart-subtotal strong').innerText(), 'CAD 0.00');
+    assert.deepEqual(browserErrors, []);
+    failCatalog = false;
+    return {catalogStatus:503,cartStillRendered:true,noUncaughtErrors:true};
+  });
   // Restore original known fixture for the durable close/reopen verification.
   for(const item of before.items) await pool.query("INSERT INTO cart_items (id,user_id,product_id,quantity) VALUES ($1,$2,$3,$4)", [item.id,item.user_id,item.product_id,item.quantity]);
   await pool.query("UPDATE cart_state SET version=$2, last_changed_at=$3, expired=$4 WHERE user_id=$1", [user.id,before.metadata[0].version,before.metadata[0].last_changed_at,before.metadata[0].expired]);
-  await step("SUP-PERSIST", "Close and reopen file-backed database without losing fixture", async () => {
+  await step("SUP-PERSIST", postgresUrl ? "Reopen PostgreSQL connection and verify committed fixture" : "Close and reopen file-backed database without losing fixture", async () => {
     assert.deepEqual(await snapshot(user.id), before);
     await pool.end(); databaseClosed = true;
-    const { PGlite } = require("@electric-sql/pglite");
-    const reopened = new PGlite(process.env.PGLITE_DATA_DIR);
+    const reopened = postgresUrl
+      ? new (require('pg').Pool)({host:process.env.DB_HOST, port:Number(process.env.DB_PORT), user:process.env.DB_USER, password:process.env.DB_PASSWORD, database:process.env.DB_NAME})
+      : new (require("@electric-sql/pglite").PGlite)(process.env.PGLITE_DATA_DIR);
     try {
       const items = (await reopened.query("SELECT id, user_id, product_id, quantity FROM cart_items WHERE user_id = $1 ORDER BY id", [user.id])).rows;
       assert.deepEqual(items, before.items);
-      return { persistedAfterDatabaseReopen: true, quantities: items.map(i => i.quantity) };
-    } finally { await reopened.close(); }
+      return { ...(postgresUrl ? {persistedAfterConnectionReopen:true} : {persistedAfterDatabaseReopen:true}), quantities: items.map(i => i.quantity) };
+    } finally { if (postgresUrl) await reopened.end(); else await reopened.close(); }
   });
   assert.deepEqual(browserErrors, []);
   fs.writeFileSync(path.join(evidence, "cart-response.json"), JSON.stringify(observedCarts[0], null, 2));
@@ -247,11 +287,15 @@ main().catch(error => { console.error(error.stack); process.exitCode = 1; }).fin
   if (browser) await browser.close();
   if (server) await new Promise(resolve => server.close(resolve));
   if (!databaseClosed) await pool.end();
+  if (admin) {
+    if (postgresCreated) await admin.query(`DROP DATABASE "${process.env.DB_NAME}"`);
+    await admin.end();
+  }
   const report = {
     runId, observedAt: new Date().toISOString(), buildFingerprint,
-    environment: { node: process.version, database: "PGlite 0.3.14, file-backed embedded PostgreSQL", browser: "Microsoft Edge headless", frontend: "Vite production build served by Express on loopback", syntheticOnly: true },
+    environment: { node: process.version, database: postgresUrl ? postgresVersion : "PGlite 0.3.14, file-backed embedded PostgreSQL", browser: process.platform === 'win32' ? 'Microsoft Edge headless' : 'Chromium headless', frontend: "Vite production build served by Express on loopback", syntheticOnly: true, isolatedDatabaseDropped: postgresUrl ? true : undefined },
     results, cartRequests: network,
-    caveats: ["Agent-executed local acceptance checks; no independent business sign-off", "Not a conventional PostgreSQL server deployment", "No mutations, checkout, logout revocation or unresolved recovery release claimed"],
+    caveats: ["Automated acceptance checks; no independent business sign-off", postgresUrl ? "Isolated PostgreSQL server test; not production deployment" : "Not a conventional PostgreSQL server deployment", "No mutations, checkout, logout revocation or unresolved recovery release claimed"],
   };
   fs.writeFileSync(path.join(evidence, "run-results.json"), JSON.stringify(report, null, 2));
   fs.writeFileSync(path.join(evidence, "build-manifest.json"), JSON.stringify({ buildFingerprint, files: manifest }, null, 2));
