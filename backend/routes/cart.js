@@ -1,35 +1,22 @@
 const express = require("express");
-const { pool } = require("../db");
+const { readCart } = require("../services/cart-read");
 const { requireAuth } = require("../middleware/auth");
 
+module.exports = function cartRoutes({ beforeRead } = {}) {
 const router = express.Router();
+router.use((req, res, next) => { res.set("Cache-Control", "private, no-store"); next(); });
 router.use(requireAuth);
 
 router.get("/", async (req, res) => {
-  const { rows } = await pool.query(
-    `SELECT ci.id, p.name, p.price, ci.quantity
-     FROM cart_items ci JOIN products p ON ci.product_id = p.id
-     WHERE ci.user_id = $1`,
-    [req.userId]
-  );
-  res.json(rows);
+  try {
+    if (beforeRead) await beforeRead(req);
+    res.json(await readCart(req.userId));
+  } catch {
+    res.status(503).json({ error: "Could not load cart" });
+  }
 });
 
-router.post("/", async (req, res) => {
-  const { productId, quantity } = req.body;
-  const { rows } = await pool.query(
-    "INSERT INTO cart_items (user_id, product_id, quantity) VALUES ($1, $2, $3) RETURNING *",
-    [req.userId, productId, quantity || 1]
-  );
-  res.status(201).json(rows[0]);
-});
-
-router.delete("/:id", async (req, res) => {
-  await pool.query("DELETE FROM cart_items WHERE id = $1 AND user_id = $2", [
-    req.params.id,
-    req.userId,
-  ]);
-  res.status(204).send();
-});
-
-module.exports = router;
+// Read-only increment: the mutation release gates have not been closed.
+router.use((req, res) => res.status(501).json({ error: "Cart changes are not enabled in this increment" }));
+return router;
+};
