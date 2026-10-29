@@ -9,6 +9,7 @@ const root = path.resolve(__dirname, "../..");
 const runId = new Date().toISOString().replace(/[:.]/g, "-");
 const runRoot = path.join(root, ".local", "cart-uat", runId);
 const evidence = path.resolve(process.env.EVIDENCE_DIR || path.join(runRoot, "evidence"));
+fs.mkdirSync(runRoot, { recursive: true });
 fs.mkdirSync(evidence, { recursive: true });
 process.env.NODE_ENV = "test";
 const postgresUrl = process.env.CART_UAT_PG_URL;
