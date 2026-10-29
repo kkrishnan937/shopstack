@@ -21,8 +21,6 @@ Evidence is written to the run's `evidence/` directory: screenshots, sanitized r
 
 PGlite is a file-backed embedded PostgreSQL development dependency ([official filesystem documentation](https://pglite.dev/docs/filesystems)). It runs actual SQL but is not a conventional deployed PostgreSQL server; normal backend startup still defaults to `pg` and DB environment variables. Production mode rejects the embedded engine. This run does not verify production deployment, multi-process database behaviour or independent business approval.
 
-## Manual local use
-
 ## Conventional PostgreSQL verification
 
 The same browser suite can run through the normal `pg` adapter against an isolated PostgreSQL server. Set `CART_UAT_PG_URL` to its loopback `postgres` maintenance database (for example the disposable PostgreSQL service in `.github/workflows/cart-viewing.yaml`). The harness creates a uniquely generated `shopstack_uat_*` database, uses only that database for fixtures, closes connections and drops only its generated database afterward. The role needs permission to create databases. Never point this test configuration at a production service. The URL is not written to evidence. With PostgreSQL, SUP-PERSIST verifies committed data through a new connection; it does not claim a database-server restart.
