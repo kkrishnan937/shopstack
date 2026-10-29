@@ -9,3 +9,4 @@ dist/
 alb-iam-policy.json
 alb-trust-policy.json
 trust-policy.json
+.local/

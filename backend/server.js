@@ -8,16 +8,21 @@ const productRoutes = require("./routes/products");
 const cartRoutes = require("./routes/cart");
 const orderRoutes = require("./routes/orders");
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-app.get("/health", (req, res) => res.json({ status: "ok" }));
-
-app.use("/api/auth", authRoutes);
-app.use("/api/products", productRoutes);
-app.use("/api/cart", cartRoutes);
-app.use("/api/orders", orderRoutes);
+function createApp({ beforeCartRead } = {}) {
+  if (beforeCartRead && process.env.NODE_ENV !== "test") throw new Error("Failure control is test-only");
+  const app = express();
+  app.use(cors());
+  app.use(express.json());
+  app.get("/health", (req, res) => res.json({ status: "ok" }));
+  app.use("/api/auth", authRoutes);
+  app.use("/api/products", productRoutes);
+  app.use("/api/cart", cartRoutes({ beforeRead: beforeCartRead }));
+  app.use("/api/orders", (req, res, next) => {
+    if (req.method !== "GET") return res.status(501).json({ error: "Order submission is not enabled in this increment" });
+    next();
+  }, orderRoutes);
+  return app;
+}
 
 const PORT = process.env.PORT || 8080;
 
@@ -26,9 +31,11 @@ const PORT = process.env.PORT || 8080;
 // backend pod can start before the database pod finishes initializing).
 async function start() {
   let attempts = 0;
+  let ready = false;
   while (attempts < 10) {
     try {
       await initSchema();
+      ready = true;
       break;
     } catch (err) {
       attempts++;
@@ -37,7 +44,9 @@ async function start() {
     }
   }
 
-  app.listen(PORT, () => console.log(`ShopStack API listening on port ${PORT}`));
+  if (!ready) throw new Error("Database initialization failed");
+  createApp().listen(PORT, process.env.HOST || "0.0.0.0", () => console.log(`ShopStack API listening on port ${PORT}`));
 }
 
-start();
+if (require.main === module) start().catch(() => { console.error("Backend startup failed"); process.exitCode = 1; });
+module.exports = { createApp };
